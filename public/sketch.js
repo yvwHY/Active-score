@@ -1,39 +1,37 @@
 /*eslint no-undef: 0*/
 const socket = io();
 let mic, recorder, soundFile;
-let pitchModel; // ml5 pitch detection
-let state = 0; // 0: ready, 1: recording, 2: analyzing/done, 3: uploading
+let pitchModel;
+let state = 0; // 0: ready, 1: mic starting, 2: recording, 3: done, 4: uploading
 let statusMsg = 'Tap to START Mic';
 
 // 畫布與視覺變數
-let scoreGraphics; // 用於永久保存所有人的線條 (off-screen buffer)
-let currentRecordingPitches = []; // 當前錄音的音高數據
-let scoreY; // 五線譜的基準 Y 坐標
+let scoreGraphics;
+let currentRecordingPitches = [];
+let scoreY;
 
 function setup() {
   createCanvas(windowWidth, windowHeight);
 
-  // 初始化離屏畫布
+  // 初始化離屏畫布：這是為了確保畫面不全白
   scoreGraphics = createGraphics(windowWidth, windowHeight);
-  scoreGraphics.clear(); // 確保透明
+  scoreGraphics.clear();
   scoreY = height / 2;
 
   textAlign(CENTER, CENTER);
 
+  // 1. 初始化音訊物件
   mic = new p5.AudioIn();
   recorder = new p5.SoundRecorder();
   recorder.setInput(mic);
 
-  // 修正點：使用 getAudioContext() 替代 audioContext
-  const modelUrl = 'https://cdn.jsdelivr.net/gh/ml5js/ml5-data-and-models/models/pitch-detection/crepe/';
-
-  // 確保 mic 開始後再初始化 pitch，或者直接傳入串流
-  pitchModel = ml5.pitchDetection(modelUrl, getAudioContext(), mic.stream, modelLoaded);
-
+  // 2. 接收伺服器數據
   socket.on("init-score-history", (dataList) => {
-    dataList.forEach(data => {
-      drawScoreLine(scoreGraphics, data.pitches, color(random(100, 200), 150));
-    });
+    if (dataList && Array.isArray(dataList)) {
+      dataList.forEach(data => {
+        drawScoreLine(scoreGraphics, data.pitches, color(random(100, 200), 150));
+      });
+    }
   });
 
   socket.on("new-score-line", (data) => {
@@ -41,61 +39,66 @@ function setup() {
   });
 }
 
+// 當 ml5 模型載入完成
 function modelLoaded() {
   console.log("Pitch Model Loaded!");
 }
 
 function draw() {
-  background(255);
+  background(255); // 刷白背景
 
-  // 1. 繪製背景五線譜
+  // 1. 繪製靜態五線譜
   drawStaff();
 
-  // 2. 顯示已經存在的歷史線條 (由 scoreGraphics 提供)
-  image(scoreGraphics, 0, 0);
+  // 2. 顯示永久畫布 (包含所有人的歷史線條)
+  if (scoreGraphics) {
+    image(scoreGraphics, 0, 0);
+  }
 
   // 3. UI 狀態顯示
   drawUI();
 
-  // 4. 即時音高追蹤 (錄音時顯示目前的跳動球)
-  if (state === 1) {
+  // 4. 即時音高分析 (僅在錄音狀態)
+  if (state === 2 && pitchModel) {
     analyzeLivePitch();
   }
 }
 
-// 繪製靜態五線譜
 function drawStaff() {
-  stroke(200);
+  push();
+  stroke(220);
   strokeWeight(1);
   for (let i = -2; i <= 2; i++) {
     let y = scoreY + i * 20;
     line(50, y, width - 50, y);
   }
+  pop();
 }
 
-// 分析即時音高並存入陣列
 function analyzeLivePitch() {
   pitchModel.getPitch((err, frequency) => {
     if (frequency) {
-      let midiNum = freqToMidi(frequency);
+      // 修正點：使用自定義的 calculateMidi 避免與 p5 衝突
+      let midiNum = calculateMidi(frequency);
       currentRecordingPitches.push(midiNum);
 
-      // 畫一個即時跳動的球
-      let y = map(midiNum, 48, 72, scoreY + 60, scoreY - 60); // 映射 C3-C5
+      // 即時繪製當前跳動的球
+      let y = map(midiNum, 48, 72, scoreY + 60, scoreY - 60);
       fill(255, 0, 0);
       noStroke();
-      ellipse(width / 2, y, 20, 20);
+      ellipse(width / 2, y, 15, 15);
     } else {
-      currentRecordingPitches.push(null); // 代表無聲
+      currentRecordingPitches.push(null);
     }
   });
 }
 
-// 將一組音高數據畫成五線譜上的線條
 function drawScoreLine(pg, pitches, c) {
+  if (!pitches || pitches.length === 0) return;
+  pg.push();
   pg.noFill();
   pg.stroke(c);
-  pg.strokeWeight(3);
+  pg.strokeWeight(2);
   pg.beginShape();
   for (let i = 0; i < pitches.length; i++) {
     if (pitches[i]) {
@@ -108,57 +111,75 @@ function drawScoreLine(pg, pitches, c) {
     }
   }
   pg.endShape();
+  pg.pop();
 }
 
 function drawUI() {
   fill(0);
   noStroke();
-  textSize(24);
-  text(statusMsg, width / 2, height - 150);
+  textSize(20);
+  text(statusMsg, width / 2, height - 100);
 
-  if (state === 1) {
-    fill(255, 0, 0, 100);
-    ellipse(width / 2, 50, 20, 20); // 錄音指示燈
+  if (state === 2) {
+    fill(255, 0, 0);
+    ellipse(width / 2, 40, 15, 15); // 錄音指示
   }
 }
 
 function touchStarted() {
+  // 啟動 AudioContext (瀏覽器安全要求)
   userStartAudio();
 
   if (state === 0) {
-    // 開始錄音
+    // A. 啟動麥克風並載入模型
+    statusMsg = 'Starting Mic & Model...';
+    state = 1;
     mic.start(() => {
-      soundFile = new p5.SoundFile();
-      recorder.record(soundFile);
-      currentRecordingPitches = [];
-      state = 1;
-      statusMsg = 'RECORDING... \nSing something!';
+      // 修正點：確保在 mic 啟動後才初始化 ml5
+      const modelUrl = 'https://cdn.jsdelivr.net/gh/ml5js/ml5-data-and-models/models/pitch-detection/crepe/';
+      pitchModel = ml5.pitchDetection(modelUrl, getAudioContext(), mic.stream, () => {
+        statusMsg = 'Ready! \nTap to RECORD';
+      });
     });
   } else if (state === 1) {
-    // 停止錄音
-    recorder.stop();
+    // B. 開始錄音
+    soundFile = new p5.SoundFile();
+    recorder.record(soundFile);
+    currentRecordingPitches = [];
     state = 2;
-    statusMsg = 'DONE! \nTap to UPLOAD your data';
+    statusMsg = 'RECORDING... \nSing your data!';
   } else if (state === 2) {
-    // 上傳數據
-    statusMsg = 'UPLOADING DATA...';
-    let soundBlob = soundFile.getBlob();
-
-    // 同時發送音檔與分析好的音高數據
+    // C. 停止錄音
+    recorder.stop();
+    state = 3;
+    statusMsg = 'DONE! \nTap to UPLOAD to Archive';
+  } else if (state === 3) {
+    // D. 上傳
+    statusMsg = 'UPLOADING...';
+    state = 4;
     socket.emit('upload-audio', {
-      audio: soundBlob,
+      audio: soundFile.getBlob(),
       pitches: currentRecordingPitches
     });
 
     socket.once('upload-success', () => {
-      state = 0;
-      statusMsg = 'DATA SAVED! \nRecord again?';
+      state = 1; // 回到就緒狀態
+      statusMsg = 'SAVED TO CLOUD! \nRecord another?';
     });
   }
   return false;
 }
 
-// 輔助函數：頻率轉 MIDI
+// 輔助函數：避開名稱衝突
 function calculateMidi(f) {
   return 69 + 12 * Math.log2(f / 440);
+}
+
+function windowResized() {
+  resizeCanvas(windowWidth, windowHeight);
+  // 重新調整 scoreGraphics 尺寸但保留內容
+  let newG = createGraphics(windowWidth, windowHeight);
+  newG.image(scoreGraphics, 0, 0);
+  scoreGraphics = newG;
+  scoreY = height / 2;
 }
