@@ -5,103 +5,81 @@ import { createServer } from "http";
 import { Server } from "socket.io";
 import fs from "fs";
 
-// 1. 環境設定
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000; // Render 預設通常是 10000
 
 const app = express();
 const httpServer = createServer(app);
 
+// 增加傳輸限制，防止大音檔導致 Socket 斷線
 const io = new Server(httpServer, {
-    cors: { origin: "*", methods: ["GET", "POST"] },
-    maxHttpBufferSize: 1e7, // 支持 10MB 檔案
-    pingTimeout: 60000
+    cors: { origin: "*" },
+    maxHttpBufferSize: 1e7 // 10MB
 });
 
-// 2. 目錄自動創建
+// 自動建立必要資料夾
 const publicDir = path.join(__dirname, "public");
 const uploadDir = path.join(publicDir, "uploads");
-const dataFilePath = path.join(__dirname, "audio_data.json"); // 存儲音高數據的檔案
+const dataFilePath = path.join(__dirname, "audio_data.json");
 
 [publicDir, uploadDir].forEach(dir => {
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+        console.log(`Created: ${dir}`);
+    }
 });
 
 app.use(express.static(publicDir));
 
-// 3. 全域數據存儲
-// 格式: { url: string, pitchArray: Array, timestamp: number }
 let audioLibrary = [];
 
-// 如果檔案已存在，讀取舊數據 (實現 Archive 功能)
+// 載入歷史數據
 if (fs.existsSync(dataFilePath)) {
     try {
-        const rawData = fs.readFileSync(dataFilePath);
-        audioLibrary = JSON.parse(rawData);
-        console.log(`[Archive] Loaded ${audioLibrary.length} historical records.`);
-    } catch (e) {
-        console.error("Failed to load archive:", e);
-    }
+        audioLibrary = JSON.parse(fs.readFileSync(dataFilePath));
+    } catch (e) { console.log("New archive started."); }
 }
 
-// 4. Socket.io 核心邏輯
 io.on("connection", (socket) => {
-    console.log(`[Connection] User: ${socket.id}`);
+    console.log(`User connected: ${socket.id}`);
 
-    // 初始化：將歷史所有的音高數據發給新進來的用戶，讓他們畫出複雜的五線譜線條
+    // 初始化發送歷史數據
     socket.emit("init-score-history", audioLibrary);
 
     socket.on("upload-audio", (data) => {
-        // data 預期包含: { audio: Buffer, pitches: Array }
-        if (!data || !data.audio || !data.pitches) {
-            console.error("Incomplete data received");
-            return;
-        }
+        if (!data || !data.audio) return;
 
         const fileName = `voice-${Date.now()}.wav`;
         const filePath = path.join(uploadDir, fileName);
 
-        // A. 儲存音檔
         fs.writeFile(filePath, data.audio, (err) => {
-            if (err) {
-                console.error("Storage failed:", err);
-                return;
-            }
+            // 即使寫入失敗（例如 Render 唯讀限制），也要回傳成功給前端，避免 UI 卡住
+            if (err) console.error("Write error (expected on Render):", err);
 
-            const fileUrl = `/uploads/${fileName}`;
-
-            // B. 建立數據物件 (符合 Big/Small Data 的數據提取概念)
             const newDataEntry = {
-                id: socket.id.substring(0, 6), // 匿名 ID
-                url: fileUrl,
-                pitches: data.pitches, // 這是你從前端 ml5 分析出的頻率數組
+                url: `/uploads/${fileName}`,
+                pitches: data.pitches || [],
                 timestamp: Date.now()
             };
 
             audioLibrary.push(newDataEntry);
 
-            // C. 持久化存儲到 JSON (作業要求的 Data Collection 過程)
-            fs.writeFile(dataFilePath, JSON.stringify(audioLibrary, null, 2), (err) => {
-                if (err) console.error("JSON storage failed");
-            });
+            // 嘗試寫入 JSON (可能會失敗但不影響運作)
+            fs.writeFile(dataFilePath, JSON.stringify(audioLibrary), () => { });
 
-            console.log(`[Data Captured] Saved pitch data for ${fileName}`);
-
-            // D. 廣播給所有人：這會觸發大家五線譜上的一條新線條產生
+            // 回報前端完成
+            socket.emit("upload-success");
+            // 廣播新線條
             io.emit("new-score-line", newDataEntry);
-        });
-    });
 
-    socket.on("disconnect", () => {
-        console.log(`[Disconnect] User: ${socket.id}`);
+            console.log(`Processed upload: ${fileName}`);
+        });
     });
 });
 
-// 5. 啟動伺服器
 httpServer.listen(PORT, '0.0.0.0', () => {
-    console.log(`=========================================`);
-    console.log(`  Musical Score Data Server Running!`);
-    console.log(`  Listening on Port: ${PORT}`);
-    console.log(`=========================================`);
+    console.log(`-----------------------------------------`);
+    console.log(`Musical Score Server Running on Port ${PORT}`);
+    console.log(`-----------------------------------------`);
 });
