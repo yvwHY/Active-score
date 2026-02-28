@@ -1,213 +1,163 @@
 /*eslint no-undef: 0*/
 const socket = io();
 let mic, recorder, soundFile;
-let state = 0;
-let isChoirStarted = false;
-let allVoices = [];
-let balls = [];
+let pitchModel; // ml5 pitch detection
+let state = 0; // 0: ready, 1: recording, 2: analyzing/done, 3: uploading
 let statusMsg = 'Tap to START Mic';
 
-// Collaborative prompts to encourage users
-let hints = [
-  "Record more sounds to enrich the choir!",
-  "Invite friends nearby to join the recording.",
-  "Each ball represents a unique soul's voice.",
-  "Layer different tones to create a collaborative space.",
-  "The more voices, the more vibrant the physics world!"
-];
-let currentHint = "";
-let lastHintTime = 0;
+// 畫布與視覺變數
+let scoreGraphics; // 用於永久保存所有人的線條 (off-screen buffer)
+let currentRecordingPitches = []; // 當前錄音的音高數據
+let scoreY; // 五線譜的基準 Y 坐標
 
 function setup() {
   createCanvas(windowWidth, windowHeight);
-  textAlign(CENTER, CENTER);
-  currentHint = random(hints);
+  scoreGraphics = createGraphics(windowWidth, windowHeight);
+  scoreGraphics.clear();
+  scoreY = height / 2;
 
+  textAlign(CENTER, CENTER);
+
+  // 初始化音訊
   mic = new p5.AudioIn();
   recorder = new p5.SoundRecorder();
   recorder.setInput(mic);
-  soundFile = new p5.SoundFile();
 
-  // Sync: Fetch existing history on connection
-  socket.on("init-audio-list", (urls) => {
-    urls.forEach(url => loadAndAddVoice(url));
+  // 載入 ml5 Pitch Detection 模型 (使用 CREPE 模型)
+  pitchModel = ml5.pitchDetection('https://cdn.jsdelivr.net/gh/ml5js/ml5-data-and-models/models/pitch-detection/crepe/', audioContext, mic.stream, modelLoaded);
+
+  // 接收歷史數據並繪製
+  socket.on("init-score-history", (dataList) => {
+    dataList.forEach(data => {
+      drawScoreLine(scoreGraphics, data.pitches, color(random(100, 255), random(100, 255), random(100, 255), 150));
+    });
   });
 
-  // Sync: Receive new uploads from others in real-time
-  socket.on("new-voice", (data) => {
-    loadAndAddVoice(data.url);
-  });
-
-  socket.on('upload-success', () => {
-    state = 0;
-    statusMsg = 'Upload Success!\nRecord another?';
+  // 接收即時的新線條
+  socket.on("new-score-line", (data) => {
+    // 在主畫布上增加一個「動畫球」或者直接畫入永久畫布
+    drawScoreLine(scoreGraphics, data.pitches, color(random(255), 50, 150, 200));
   });
 }
 
-// Amplification Logic: Boosting volume for mobile hardware limits
-function loadAndAddVoice(url) {
-  loadSound(url, (s) => {
-    // Boosting playback volume to 5.0 to compensate for quiet mobile mics
-    s.setVolume(5.0);
-    allVoices.push(s);
-    // Create a physics ball for the new voice
-    balls.push(new Ball(random(width), -50, random(15, 30)));
-  });
+function modelLoaded() {
+  console.log("Pitch Model Loaded!");
 }
 
 function draw() {
-  background(state === 1 ? [255, 0, 0] : 220);
+  background(255);
 
-  // Update Hint every 5 seconds
-  if (millis() - lastHintTime > 5000) {
-    currentHint = random(hints);
-    lastHintTime = millis();
-  }
+  // 1. 繪製背景五線譜
+  drawStaff();
 
-  // Update and Display Physics Balls
-  for (let b of balls) {
-    b.update();
-    b.checkEdges();
-    b.checkCollision(balls);
-    b.display();
-  }
+  // 2. 顯示已經存在的歷史線條 (由 scoreGraphics 提供)
+  image(scoreGraphics, 0, 0);
 
-  // UI Elements
-  fill(0);
-  noStroke();
+  // 3. UI 狀態顯示
+  drawUI();
 
-  // Display Prompt
-  textSize(16);
-  fill(100);
-  text(currentHint, width / 2, 25);
-
-  // Stats
-  fill(0);
-  textSize(20);
-  text(`Voices in Choir: ${allVoices.length}`, width / 2, 60);
-
-  textSize(28);
-  text(statusMsg, width / 2, height / 2 - 50);
-
-  // Recording Volume Visualizer
+  // 4. 即時音高追蹤 (錄音時顯示目前的跳動球)
   if (state === 1) {
-    let level = mic.getLevel();
-    let h = map(level, 0, 0.5, 0, height);
-    fill(255, 255, 0, 150);
-    rect(0, height, 30, -h);
+    analyzeLivePitch();
   }
-
-  // Play All Button
-  fill(0, 150, 255);
-  rectMode(CENTER);
-  rect(width / 2, height - 100, 240, 70, 15);
-  fill(255);
-  text("PLAY CHOIR", width / 2, height - 100);
 }
 
-function handleUpload() {
-  statusMsg = 'UPLOADING...';
-  let soundBlob = soundFile.getBlob();
+// 繪製靜態五線譜
+function drawStaff() {
+  stroke(200);
+  strokeWeight(1);
+  for (let i = -2; i <= 2; i++) {
+    let y = scoreY + i * 20;
+    line(50, y, width - 50, y);
+  }
+}
 
-  // 建立一個安全機制：如果 10 秒內沒收到 upload-success，強制重置狀態
-  setTimeout(() => {
-    if (state === 2 && statusMsg === 'UPLOADING...') {
-      state = 0;
-      statusMsg = 'Upload Timeout. Please try again.';
-      console.log("Upload timed out.");
+// 分析即時音高並存入陣列
+function analyzeLivePitch() {
+  pitchModel.getPitch((err, frequency) => {
+    if (frequency) {
+      let midiNum = freqToMidi(frequency);
+      currentRecordingPitches.push(midiNum);
+
+      // 畫一個即時跳動的球
+      let y = map(midiNum, 48, 72, scoreY + 60, scoreY - 60); // 映射 C3-C5
+      fill(255, 0, 0);
+      noStroke();
+      ellipse(width / 2, y, 20, 20);
+    } else {
+      currentRecordingPitches.push(null); // 代表無聲
     }
-  }, 10000);
+  });
+}
 
-  socket.emit('upload-audio', { audio: soundBlob });
+// 將一組音高數據畫成五線譜上的線條
+function drawScoreLine(pg, pitches, c) {
+  pg.noFill();
+  pg.stroke(c);
+  pg.strokeWeight(3);
+  pg.beginShape();
+  for (let i = 0; i < pitches.length; i++) {
+    if (pitches[i]) {
+      let x = map(i, 0, pitches.length, 50, width - 50);
+      let y = map(pitches[i], 48, 72, scoreY + 60, scoreY - 60);
+      pg.vertex(x, y);
+    } else {
+      pg.endShape();
+      pg.beginShape();
+    }
+  }
+  pg.endShape();
+}
+
+function drawUI() {
+  fill(0);
+  noStroke();
+  textSize(24);
+  text(statusMsg, width / 2, height - 150);
+
+  if (state === 1) {
+    fill(255, 0, 0, 100);
+    ellipse(width / 2, 50, 20, 20); // 錄音指示燈
+  }
 }
 
 function touchStarted() {
   userStartAudio();
 
-  // 1. Play Button Logic
-  if (mouseY > height - 135 && mouseY < height - 65 && mouseX > width / 2 - 120 && mouseX < width / 2 + 120) {
-    allVoices.forEach(v => {
-      if (v.isLoaded()) {
-        v.setVolume(5.0);
-        v.play();
-      }
-    });
-    // Visual feedback: Balls jump on play
-    for (let b of balls) { b.vel.y -= random(5, 10); }
-    return false;
-  }
-
-  // 2. Mic Initialization
-  if (!isChoirStarted) {
+  if (state === 0) {
+    // 開始錄音
     mic.start(() => {
-      isChoirStarted = true;
-      mic.amp(1.0); // Maximize input gain
-      statusMsg = 'Mic Active!\nTap to RECORD';
-    }, () => {
-      statusMsg = 'Mic Denied!';
-    });
-    statusMsg = 'Connecting Mic...';
-    return false;
-  }
-
-  // 3. Recording State Machine
-  if (isChoirStarted) {
-    if (state === 0) {
       soundFile = new p5.SoundFile();
       recorder.record(soundFile);
+      currentRecordingPitches = [];
       state = 1;
-      statusMsg = 'RECORDING...';
-    } else if (state === 1) {
-      recorder.stop();
-      state = 2;
-      statusMsg = 'DONE!\nTap to UPLOAD';
-    } else if (state === 2) {
-      statusMsg = 'UPLOADING...';
-      socket.emit('upload-audio', { audio: soundFile.getBlob() });
-    }
+      statusMsg = 'RECORDING... \nSing something!';
+    });
+  } else if (state === 1) {
+    // 停止錄音
+    recorder.stop();
+    state = 2;
+    statusMsg = 'DONE! \nTap to UPLOAD your data';
+  } else if (state === 2) {
+    // 上傳數據
+    statusMsg = 'UPLOADING DATA...';
+    let soundBlob = soundFile.getBlob();
+
+    // 同時發送音檔與分析好的音高數據
+    socket.emit('upload-audio', {
+      audio: soundBlob,
+      pitches: currentRecordingPitches
+    });
+
+    socket.once('upload-success', () => {
+      state = 0;
+      statusMsg = 'DATA SAVED! \nRecord again?';
+    });
   }
   return false;
 }
 
-// Nature of Code: Ball Class
-class Ball {
-  constructor(x, y, r) {
-    this.pos = createVector(x, y);
-    this.vel = createVector(random(-1, 1), random(2, 5));
-    this.acc = createVector(0, 0.25); // Gravity
-    this.r = r;
-    this.color = color(random(255), random(255), random(255), 180);
-  }
-
-  update() {
-    this.vel.add(this.acc);
-    this.pos.add(this.vel);
-  }
-
-  display() {
-    fill(this.color);
-    ellipse(this.pos.x, this.pos.y, this.r * 2);
-  }
-
-  checkEdges() {
-    if (this.pos.y > height - this.r) {
-      this.pos.y = height - this.r;
-      this.vel.y *= -0.6; // Bounciness
-    }
-    if (this.pos.x > width - this.r || this.pos.x < this.r) {
-      this.vel.x *= -0.8;
-    }
-  }
-
-  checkCollision(others) {
-    for (let other of others) {
-      if (other === this) continue;
-      let d = dist(this.pos.x, this.pos.y, other.pos.x, other.pos.y);
-      if (d < this.r + other.r) {
-        let pushForce = p5.Vector.sub(this.pos, other.pos);
-        pushForce.setMag(0.1);
-        this.vel.add(pushForce);
-      }
-    }
-  }
+// 輔助函數：頻率轉 MIDI
+function freqToMidi(f) {
+  return 69 + 12 * Math.log2(f / 440);
 }
