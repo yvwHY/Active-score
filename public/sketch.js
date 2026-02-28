@@ -12,31 +12,32 @@ let scoreY; // 五線譜的基準 Y 坐標
 
 function setup() {
   createCanvas(windowWidth, windowHeight);
+
+  // 初始化離屏畫布
   scoreGraphics = createGraphics(windowWidth, windowHeight);
-  scoreGraphics.clear();
+  scoreGraphics.clear(); // 確保透明
   scoreY = height / 2;
 
   textAlign(CENTER, CENTER);
 
-  // 初始化音訊
   mic = new p5.AudioIn();
   recorder = new p5.SoundRecorder();
   recorder.setInput(mic);
 
-  // 載入 ml5 Pitch Detection 模型 (使用 CREPE 模型)
-  pitchModel = ml5.pitchDetection('https://cdn.jsdelivr.net/gh/ml5js/ml5-data-and-models/models/pitch-detection/crepe/', audioContext, mic.stream, modelLoaded);
+  // 修正點：使用 getAudioContext() 替代 audioContext
+  const modelUrl = 'https://cdn.jsdelivr.net/gh/ml5js/ml5-data-and-models/models/pitch-detection/crepe/';
 
-  // 接收歷史數據並繪製
+  // 確保 mic 開始後再初始化 pitch，或者直接傳入串流
+  pitchModel = ml5.pitchDetection(modelUrl, getAudioContext(), mic.stream, modelLoaded);
+
   socket.on("init-score-history", (dataList) => {
     dataList.forEach(data => {
-      drawScoreLine(scoreGraphics, data.pitches, color(random(100, 255), random(100, 255), random(100, 255), 150));
+      drawScoreLine(scoreGraphics, data.pitches, color(random(100, 200), 150));
     });
   });
 
-  // 接收即時的新線條
   socket.on("new-score-line", (data) => {
-    // 在主畫布上增加一個「動畫球」或者直接畫入永久畫布
-    drawScoreLine(scoreGraphics, data.pitches, color(random(255), 50, 150, 200));
+    drawScoreLine(scoreGraphics, data.pitches, color(255, 50, 150));
   });
 }
 
@@ -158,6 +159,6 @@ function touchStarted() {
 }
 
 // 輔助函數：頻率轉 MIDI
-function freqToMidi(f) {
+function calculateMidi(f) {
   return 69 + 12 * Math.log2(f / 440);
 }
