@@ -143,6 +143,14 @@ function drawUI() {
   textSize(14);
   text(statusMsg, width / 2, height - 100);
   text(`Archives: ${allVoices.length}`, width / 2, 40);
+  
+  if (!pitchModel) {
+    fill(255, 100, 0);
+    text("Waiting for AI Model...", width / 2, 60);
+  } else {
+    fill(0, 200, 0);
+    text("AI Model Ready", width / 2, 60);
+  }
 }
 
 function touchStarted() {
