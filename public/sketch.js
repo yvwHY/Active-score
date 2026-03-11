@@ -153,49 +153,54 @@ function drawUI() {
   }
 }
 
-function touchStarted() {
-  userStartAudio(); // Required by browsers to enable audio context
-
-  // Logic for the "PLAY ALL" button
-  if (mouseY > height - 75 && mouseY < height - 25 && mouseX > width / 2 - 90 && mouseX < width / 2 + 90) {
-    allVoices.forEach(v => { if (v.isLoaded()) v.play(); });
-    return false;
+async function touchStarted() {
+  
+  if (getAudioContext().state !== 'running') {
+    await getAudioContext().resume();
+    console.log("Audio Context Resumed");
   }
 
-  // Recording State Machine
+  
+  userStartAudio();
+
   if (state === 0) {
-    statusMsg = 'Loading AI Model...';
+    statusMsg = 'Requesting Mic...';
+    
     mic.start(() => {
-      // Initialize ml5 Pitch Detection (CREPE model)
+      console.log("Mic is started, stream:", mic.stream);
+
+      
       const modelUrl = 'https://cdn.jsdelivr.net/gh/ml5js/ml5-data-and-models/models/pitch-detection/crepe/';
       pitchModel = ml5.pitchDetection(modelUrl, getAudioContext(), mic.stream, () => {
         state = 1;
-        statusMsg = 'Ready to Collect Voice';
+        statusMsg = 'Ready! Tap to Record';
+        console.log("Pitch detection model loaded.");
       });
+    }, (err) => {
+      statusMsg = 'Mic Denied or Error';
+      console.error("Mic start failed:", err);
     });
   } else if (state === 1) {
-    // Start Recording
+    
     soundFile = new p5.SoundFile();
     recorder.record(soundFile);
     currentRecordingPitches = [];
     state = 2;
-    statusMsg = 'Capturing Data...';
+    statusMsg = 'Recording...';
   } else if (state === 2) {
-    // Stop Recording
     recorder.stop();
     state = 3;
-    statusMsg = 'Process Complete';
+    statusMsg = 'Done! Tap to Upload';
   } else if (state === 3) {
-    // Upload Data to Server
     state = 4;
-    statusMsg = 'Sending to Archive...';
+    statusMsg = 'Uploading...';
     socket.emit('upload-audio', {
       audio: soundFile.getBlob(),
       pitches: currentRecordingPitches
     });
     socket.once('upload-success', () => {
       state = 1;
-      statusMsg = 'Data Stored! Tap to Repeat';
+      statusMsg = 'Success! Tap to repeat';
     });
   }
   return false;
