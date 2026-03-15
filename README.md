@@ -1,3 +1,11 @@
+# **Active-score**
+
+**Date:** March 2, 2026
+
+**Author:** Yu Ting Liao
+
+**Project Type:** WCC2 Workshop 3 \- Technical Proof of Concept
+
 # Active Score: A Collective Sonic Archive
 
 **Active Score** is an interactive web-based installation that explores the transformation of personal biometric data (voice) into a collective visual and auditory archive. By capturing real-time pitch data and aggregating it into a shared musical staff, the project investigates the boundaries between individual expression and big data accumulation.
