@@ -47,6 +47,6 @@ Adhering to the **"Big Data, Small Data"** brief and GDPR principles:
    npm install
 3. **Run the server:**
    ```bash
-   node server.js
+   node app.js
 4. **Open in browser:**
    Navigate to http://localhost:10000
